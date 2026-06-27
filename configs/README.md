@@ -134,4 +134,73 @@
 
 脚本会在编译前下载并执行，如果执行失败不会中断整个构建流程。
 
+### 自定义命令
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `CUSTOM_COMMANDS` | array | `[]` | 自定义命令列表 |
+
+#### CUSTOM_COMMANDS 格式
+
+```json
+"CUSTOM_COMMANDS": [
+  {
+    "command": "echo 'Building kernel'",
+    "description": "打印构建信息",
+    "working_directory": "kernel/source",
+    "continue_on_error": false
+  },
+  {
+    "command": "ls -la arch/arm64/boot/",
+    "description": "列出启动镜像",
+    "working_directory": "kernel/source",
+    "continue_on_error": false
+  }
+]
+```
+
+**字段说明：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `command` | string | ✅ | - | 要执行的命令 |
+| `description` | string | ❌ | `Command N` | 命令描述（用于日志） |
+| `working_directory` | string | ❌ | 当前目录 | 命令执行的工作目录 |
+| `continue_on_error` | boolean | ❌ | `false` | 命令失败时是否继续 |
+
+#### 使用示例
+
+在配置文件中添加自定义命令：
+
+```json
+{
+  "name": "我的设备",
+  "CUSTOM_COMMANDS": [
+    {
+      "command": "uname -a",
+      "description": "显示系统信息"
+    },
+    {
+      "command": "pwd && ls -la",
+      "description": "显示当前目录内容",
+      "working_directory": "kernel/source"
+    },
+    {
+      "command": "make -j$(nproc) help",
+      "description": "显示编译帮助",
+      "continue_on_error": true
+    }
+  ]
+}
+```
+
+#### 特性
+
+- ✅ **命令执行**：支持任意 shell 命令
+- ✅ **工作目录**：可指定命令执行的目录
+- ✅ **错误处理**：可选择命令失败时是否继续
+- ✅ **超时保护**：单条命令最多执行 5 分钟
+- ✅ **日志输出**：自动记录命令的输出和错误信息
+- ✅ **顺序执行**：命令按配置顺序依次执行
+
 ---

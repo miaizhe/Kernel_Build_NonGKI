@@ -217,6 +217,10 @@ jobs:
             CUSTOM_SCRIPTS_JSON=$(python3 -c "import json; print(json.dumps(json.load(open('configs/$CONFIG_FILE')).get('CUSTOM_SCRIPTS', [])))")
             echo "CUSTOM_SCRIPTS=$CUSTOM_SCRIPTS_JSON" >> $GITHUB_ENV
             
+            # 获取自定义命令列表
+            CUSTOM_COMMANDS_JSON=$(python3 -c "import json; print(json.dumps(json.load(open('configs/$CONFIG_FILE')).get('CUSTOM_COMMANDS', [])))")
+            echo "CUSTOM_COMMANDS=$CUSTOM_COMMANDS_JSON" >> $GITHUB_ENV
+            
             echo "Configuration loaded successfully"
             echo "Device: $DEVICE_NAME ($DEVICE_CODENAME)"
             echo "Kernel: $KERNEL_SOURCE ($KERNEL_BRANCH)"
@@ -583,6 +587,100 @@ EOF
           fi
           
           echo "[+] Custom scripts step completed"
+
+      - name: Execute Custom Commands
+        run: |
+          echo "=== Executing Custom Commands ==="
+          
+          # 检查是否有自定义命令
+          if [ -z "$CUSTOM_COMMANDS" ] || [ "$CUSTOM_COMMANDS" = "[]" ]; then
+            echo "No custom commands configured, skipping..."
+          else
+            echo "Custom commands configured: $CUSTOM_COMMANDS"
+            
+            # 使用 python3 解析 JSON 并执行命令
+            python3 << 'EOF'
+import json
+import subprocess
+import sys
+import os
+
+try:
+    commands = json.loads("$CUSTOM_COMMANDS")
+    
+    if not commands:
+        print("No commands to execute")
+        sys.exit(0)
+    
+    for i, cmd_config in enumerate(commands, 1):
+        command = cmd_config.get('command', '')
+        description = cmd_config.get('description', f'Command {i}')
+        working_dir = cmd_config.get('working_directory', '')
+        continue_on_error = cmd_config.get('continue_on_error', False)
+        
+        if not command:
+            print(f"[{i}/{len(commands)}] Skipping {description}: No command provided")
+            continue
+        
+        print(f"\n[{i}/{len(commands)}] Executing: {description}")
+        print(f"  Command: {command}")
+        if working_dir:
+            print(f"  Working Directory: {working_dir}")
+        
+        # 切换到工作目录（如果指定）
+        cwd = None
+        if working_dir and os.path.isdir(working_dir):
+            cwd = os.path.abspath(working_dir)
+        
+        # 执行命令
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5分钟超时
+            )
+            
+            # 输出命令结果
+            if result.stdout:
+                print(f"  STDOUT:\n{result.stdout}")
+            if result.stderr:
+                print(f"  STDERR:\n{result.stderr}")
+            
+            if result.returncode == 0:
+                print(f"  ✓ Completed successfully")
+            else:
+                if continue_on_error:
+                    print(f"  ⚠ Command failed (exit code {result.returncode}), but continuing...")
+                else:
+                    print(f"  ✗ Command failed (exit code {result.returncode})")
+                    if not continue_on_error:
+                        print(f"  Aborting due to command failure")
+                        sys.exit(1)
+                        
+        except subprocess.TimeoutExpired:
+            print(f"  ✗ Command timed out after 5 minutes")
+            if not continue_on_error:
+                sys.exit(1)
+        except Exception as e:
+            print(f"  ✗ Error executing command: {e}")
+            if not continue_on_error:
+                sys.exit(1)
+            
+except json.JSONDecodeError as e:
+    print(f"Error parsing commands JSON: {e}")
+    sys.exit(1)
+except Exception as e:
+    print(f"Error processing commands: {e}")
+    sys.exit(1)
+EOF
+            
+          fi
+          
+          echo ""
+          echo "[+] Custom commands step completed"
 
       - name: Configure Kernel
         run: |

@@ -32,5 +32,19 @@
       "description": "Custom patch script",
       "execute": true
     }
+  ],
+  "CUSTOM_COMMANDS": [
+    {
+      "command": "echo 'Preparing build environment'",
+      "description": "Print build info",
+      "working_directory": "kernel/source",
+      "continue_on_error": false
+    },
+    {
+      "command": "ls -la arch/arm64/boot/",
+      "description": "List boot images",
+      "working_directory": "kernel/source",
+      "continue_on_error": false
+    }
   ]
 }
