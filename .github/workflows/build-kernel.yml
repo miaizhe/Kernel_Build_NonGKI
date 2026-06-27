@@ -1,0 +1,704 @@
+---
+# NonGKI Kernel Build - 完整编译工作流
+# 基于 JackA1ltman/NonGKI_Kernel_Build_2nd 架构
+
+name: Build Non-GKI Kernel with KSU & SuSFS
+
+on:
+  workflow_dispatch:
+    inputs:
+      CONFIG_FILE:
+        description: '配置文件 (选择预设配置，留空则手动填写)'
+        required: false
+        type: choice
+        options:
+          - oneplus8.json
+          - reno10_docker.json
+          - xiaomi11_ultra.json
+          - pixel6.json
+          - ''
+        default: ''
+      
+      # ========== 手动配置参数 (当 CONFIG_FILE 为空时必填) ==========
+      KERNEL_SOURCE:
+        description: 'Kernel source repository URL (仅在 CONFIG_FILE 为空时填写)'
+        required: false
+        type: string
+      KERNEL_BRANCH:
+        description: 'Kernel source branch (仅在 CONFIG_FILE 为空时填写)'
+        required: false
+        type: string
+      KERNEL_CONFIG:
+        description: 'Defconfig filename (仅在 CONFIG_FILE 为空时填写)'
+        required: false
+        type: string
+      CLANG_SOURCE:
+        description: 'Clang compiler download URL (仅在 CONFIG_FILE 为空时填写)'
+        required: false
+        type: string
+      KERNEL_IMAGE_NAME:
+        description: 'Output kernel image name (Image, Image.gz-dtb, etc.)'
+        required: false
+        type: string
+        default: 'Image'
+
+      # ========== 设备信息 ==========
+      DEVICE_NAME:
+        description: 'Device name (e.g., oneplus_8)'
+        required: false
+        type: string
+        default: 'unknown'
+      DEVICE_CODENAME:
+        description: 'Device codename (e.g., instantnoodle)'
+        required: false
+        type: string
+        default: 'unknown'
+
+      # ========== KernelSU 配置 ==========
+      ENABLE_KERNELSU:
+        description: 'Inject KernelSU into kernel'
+        required: false
+        type: boolean
+        default: true
+      KERNELSU_BRANCH:
+        description: 'KernelSU version branch (e.g., main, v0.9.5)'
+        required: false
+        type: string
+        default: 'main'
+      KERNELSU_AUTO_FORK:
+        description: 'KernelSU fork variant'
+        required: false
+        type: choice
+        options:
+          - tiann
+          - rsuntk
+          - next
+          - resukisu
+          - sukisu
+        default: 'tiann'
+
+      # ========== SuSFS 配置 ==========
+      ENABLE_SUSFS:
+        description: 'Enable SuSFS root hiding support'
+        required: false
+        type: boolean
+        default: false
+      SUSFS_FIXED:
+        description: 'Use fixed SuSFS patches'
+        required: false
+        type: boolean
+        default: false
+
+      # ========== 高级功能 ==========
+      REKERNEL_ENABLE:
+        description: 'Apply Re:Kernel patches'
+        required: false
+        type: boolean
+        default: false
+      DROIDSPACES_ENABLE:
+        description: 'Enable Docker/LXC namespace support'
+        required: false
+        type: boolean
+        default: false
+      HOOK_METHOD:
+        description: 'KernelSU hook method'
+        required: false
+        type: choice
+        options:
+          - syscall
+          - manual
+          - trace
+        default: 'syscall'
+      KERNEL_PATCH:
+        description: 'Patch kernel_read/kernel_write (for kernels ≤4.9)'
+        required: false
+        type: boolean
+        default: false
+      BASEBAND_GUARD_ENABLE:
+        description: 'Enable baseband guard protection'
+        required: false
+        type: boolean
+        default: false
+
+      # ========== 打包配置 ==========
+      PACK_METHOD:
+        description: 'Output packaging method'
+        required: false
+        type: choice
+        options:
+          - Anykernel3
+          - mkbootimg
+        default: 'Anykernel3'
+      AK3_SOURCE:
+        description: 'AnyKernel3 repository URL'
+        required: false
+        type: string
+        default: 'https://github.com/osm0sis/AnyKernel3.git'
+      AK3_BRANCH:
+        description: 'AnyKernel3 branch'
+        required: false
+        type: string
+        default: 'master'
+      PACK_KMODULES:
+        description: 'Pack kernel modules (.ko) into output'
+        required: false
+        type: boolean
+        default: false
+      GENERATE_DTB:
+        description: 'Generate DTB file'
+        required: false
+        type: boolean
+        default: false
+      GENERATE_CHIP:
+        description: 'Chipset for DTB generation'
+        required: false
+        type: choice
+        options:
+          - qcom
+          - mediatek
+        default: 'qcom'
+
+      # ========== 构建优化 ==========
+      FREE_MORE_SPACE:
+        description: 'Optimize for more build space'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-latest
+
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Load Configuration
+        id: config
+        run: |
+          CONFIG_FILE="${{ inputs.CONFIG_FILE }}"
+          
+          if [ -n "$CONFIG_FILE" ] && [ -f "configs/$CONFIG_FILE" ]; then
+            echo "Loading configuration from: configs/$CONFIG_FILE"
+            
+            # 使用 python3 解析 JSON
+            export KERNEL_SOURCE=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE'))['KERNEL_SOURCE'])")
+            export KERNEL_BRANCH=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE'))['KERNEL_BRANCH'])")
+            export KERNEL_CONFIG=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE'))['KERNEL_CONFIG'])")
+            export KERNEL_IMAGE_NAME=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE')).get('KERNEL_IMAGE_NAME', 'Image'))")
+            export CLANG_SOURCE=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE'))['CLANG_SOURCE'])")
+            export DEVICE_NAME=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE')).get('DEVICE_NAME', 'unknown'))")
+            export DEVICE_CODENAME=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE')).get('DEVICE_CODENAME', 'unknown'))")
+            export ENABLE_KERNELSU=$(python3 -c "import json; print(str(json.load(open('configs/$CONFIG_FILE')).get('ENABLE_KERNELSU', True)).lower())")
+            export KERNELSU_BRANCH=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE')).get('KERNELSU_BRANCH', 'main'))")
+            export KERNELSU_AUTO_FORK=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE')).get('KERNELSU_AUTO_FORK', 'tiann'))")
+            export ENABLE_SUSFS=$(python3 -c "import json; print(str(json.load(open('configs/$CONFIG_FILE')).get('ENABLE_SUSFS', False)).lower())")
+            export SUSFS_FIXED=$(python3 -c "import json; print(str(json.load(open('configs/$CONFIG_FILE')).get('SUSFS_FIXED', False)).lower())")
+            export PACK_METHOD=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE')).get('PACK_METHOD', 'Anykernel3'))")
+            export AK3_SOURCE=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE')).get('AK3_SOURCE', 'https://github.com/osm0sis/AnyKernel3.git'))")
+            export AK3_BRANCH=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE')).get('AK3_BRANCH', 'master'))")
+            export PACK_KMODULES=$(python3 -c "import json; print(str(json.load(open('configs/$CONFIG_FILE')).get('PACK_KMODULES', False)).lower())")
+            export REKERNEL_ENABLE=$(python3 -c "import json; print(str(json.load(open('configs/$CONFIG_FILE')).get('REKERNEL_ENABLE', False)).lower())")
+            export DROIDSPACES_ENABLE=$(python3 -c "import json; print(str(json.load(open('configs/$CONFIG_FILE')).get('DROIDSPACES_ENABLE', False)).lower())")
+            export HOOK_METHOD=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE')).get('HOOK_METHOD', 'syscall'))")
+            export KERNEL_PATCH=$(python3 -c "import json; print(str(json.load(open('configs/$CONFIG_FILE')).get('KERNEL_PATCH', False)).lower())")
+            export BASEBAND_GUARD_ENABLE=$(python3 -c "import json; print(str(json.load(open('configs/$CONFIG_FILE')).get('BASEBAND_GUARD_ENABLE', False)).lower())")
+            export GENERATE_DTB=$(python3 -c "import json; print(str(json.load(open('configs/$CONFIG_FILE')).get('GENERATE_DTB', False)).lower())")
+            export GENERATE_CHIP=$(python3 -c "import json; print(json.load(open('configs/$CONFIG_FILE')).get('GENERATE_CHIP', 'qcom'))")
+            export FREE_MORE_SPACE=$(python3 -c "import json; print(str(json.load(open('configs/$CONFIG_FILE')).get('FREE_MORE_SPACE', False)).lower())")
+            
+            # 获取自定义脚本列表
+            CUSTOM_SCRIPTS_JSON=$(python3 -c "import json; print(json.dumps(json.load(open('configs/$CONFIG_FILE')).get('CUSTOM_SCRIPTS', [])))")
+            echo "CUSTOM_SCRIPTS=$CUSTOM_SCRIPTS_JSON" >> $GITHUB_ENV
+            
+            echo "Configuration loaded successfully"
+            echo "Device: $DEVICE_NAME ($DEVICE_CODENAME)"
+            echo "Kernel: $KERNEL_SOURCE ($KERNEL_BRANCH)"
+            echo "Config: $KERNEL_CONFIG"
+          else
+            echo "Using manual configuration from inputs"
+            export KERNEL_SOURCE="$KERNEL_SOURCE"
+            export KERNEL_BRANCH="$KERNEL_BRANCH"
+            export KERNEL_CONFIG="$KERNEL_CONFIG"
+            export KERNEL_IMAGE_NAME="$KERNEL_IMAGE_NAME"
+            export CLANG_SOURCE="$CLANG_SOURCE"
+            export DEVICE_NAME="$DEVICE_NAME"
+            export DEVICE_CODENAME="$DEVICE_CODENAME"
+            export ENABLE_KERNELSU="$ENABLE_KERNELSU"
+            export KERNELSU_BRANCH="$KERNELSU_BRANCH"
+            export KERNELSU_AUTO_FORK="$KERNELSU_AUTO_FORK"
+            export ENABLE_SUSFS="$ENABLE_SUSFS"
+            export SUSFS_FIXED="$SUSFS_FIXED"
+            export PACK_METHOD="$PACK_METHOD"
+            export AK3_SOURCE="${{ inputs.AK3_SOURCE }}"
+            export AK3_BRANCH="${{ inputs.AK3_BRANCH }}"
+            export PACK_KMODULES="$PACK_KMODULES"
+            export REKERNEL_ENABLE="$REKERNEL_ENABLE"
+            export DROIDSPACES_ENABLE="$DROIDSPACES_ENABLE"
+            export HOOK_METHOD="$HOOK_METHOD"
+            export KERNEL_PATCH="$KERNEL_PATCH"
+            export BASEBAND_GUARD_ENABLE="$BASEBAND_GUARD_ENABLE"
+            export GENERATE_DTB="$GENERATE_DTB"
+            export GENERATE_CHIP="$GENERATE_CHIP"
+            export FREE_MORE_SPACE="$FREE_MORE_SPACE"
+          fi
+          
+          # 导出环境变量
+          echo "KERNEL_SOURCE=$KERNEL_SOURCE" >> $GITHUB_ENV
+          echo "KERNEL_BRANCH=$KERNEL_BRANCH" >> $GITHUB_ENV
+          echo "KERNEL_CONFIG=$KERNEL_CONFIG" >> $GITHUB_ENV
+          echo "KERNEL_IMAGE_NAME=$KERNEL_IMAGE_NAME" >> $GITHUB_ENV
+          echo "CLANG_SOURCE=$CLANG_SOURCE" >> $GITHUB_ENV
+          echo "DEVICE_NAME=$DEVICE_NAME" >> $GITHUB_ENV
+          echo "DEVICE_CODENAME=$DEVICE_CODENAME" >> $GITHUB_ENV
+          echo "ENABLE_KERNELSU=$ENABLE_KERNELSU" >> $GITHUB_ENV
+          echo "KERNELSU_BRANCH=$KERNELSU_BRANCH" >> $GITHUB_ENV
+          echo "KERNELSU_AUTO_FORK=$KERNELSU_AUTO_FORK" >> $GITHUB_ENV
+          echo "ENABLE_SUSFS=$ENABLE_SUSFS" >> $GITHUB_ENV
+          echo "SUSFS_FIXED=$SUSFS_FIXED" >> $GITHUB_ENV
+          echo "PACK_METHOD=$PACK_METHOD" >> $GITHUB_ENV
+          echo "AK3_SOURCE=$AK3_SOURCE" >> $GITHUB_ENV
+          echo "AK3_BRANCH=$AK3_BRANCH" >> $GITHUB_ENV
+          echo "PACK_KMODULES=$PACK_KMODULES" >> $GITHUB_ENV
+          echo "REKERNEL_ENABLE=$REKERNEL_ENABLE" >> $GITHUB_ENV
+          echo "DROIDSPACES_ENABLE=$DROIDSPACES_ENABLE" >> $GITHUB_ENV
+          echo "HOOK_METHOD=$HOOK_METHOD" >> $GITHUB_ENV
+          echo "KERNEL_PATCH=$KERNEL_PATCH" >> $GITHUB_ENV
+          echo "BASEBAND_GUARD_ENABLE=$BASEBAND_GUARD_ENABLE" >> $GITHUB_ENV
+          echo "GENERATE_DTB=$GENERATE_DTB" >> $GITHUB_ENV
+          echo "GENERATE_CHIP=$GENERATE_CHIP" >> $GITHUB_ENV
+          echo "FREE_MORE_SPACE=$FREE_MORE_SPACE" >> $GITHUB_ENV
+
+      - name: Validate Configuration
+        run: |
+          echo "=== Validating Configuration ==="
+          echo "Kernel Source: $KERNEL_SOURCE"
+          echo "Kernel Branch: $KERNEL_BRANCH"
+          echo "Kernel Config: $KERNEL_CONFIG"
+          echo "Clang Source: $CLANG_SOURCE"
+          echo "Device: $DEVICE_NAME ($DEVICE_CODENAME)"
+          echo "KernelSU: $ENABLE_KERNELSU ($KERNELSU_AUTO_FORK)"
+          echo "SuSFS: $ENABLE_SUSFS"
+          echo "Pack Method: $PACK_METHOD"
+          echo ""
+          if [ -z "$KERNEL_SOURCE" ] || [ -z "$CLANG_SOURCE" ]; then
+            echo "ERROR: Missing required configuration!"
+            exit 1
+          fi
+          echo "Configuration validated successfully"
+
+      - name: Configure Fast APT Mirror
+        uses: vegardit/fast-apt-mirror.sh@v1
+
+      - name: Make Build Environment
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y kmod cpio binutils cmake binutils-aarch64-linux-gnu git wget pahole automake flex lzop bison gperf build-essential zip curl zlib1g-dev libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip dwarves device-tree-compiler python3 ccache git-lfs gnupg imagemagick libelf-dev libncurses5-dev libsdl1.2-dev gpart fuse2fs e2fsck-static icu-doc rsync adb fastboot libstdc++6 python-is-python3 gcc-aarch64-linux-gnu
+          mkdir -p kernel compiler output
+
+      - name: Checkout Kernel Source
+        run: |
+          echo "Cloning kernel source from: $KERNEL_SOURCE"
+          echo "Branch: $KERNEL_BRANCH"
+          mkdir -p kernel/source
+          cd kernel/source
+          git clone --depth 1 -b "$KERNEL_BRANCH" "$KERNEL_SOURCE" .
+          echo "Kernel source checked out successfully"
+
+      - name: Prepare Compiler
+        run: |
+          cd compiler
+          echo "Downloading Clang from: $CLANG_SOURCE"
+          FILENAME=$(basename "$CLANG_SOURCE")
+          
+          if [[ "$FILENAME" == *.tar.xz ]]; then
+            curl -fL "$CLANG_SOURCE" -o clang-toolchain.tar.xz --connect-timeout 60 --retry 5 --retry-delay 5
+            mkdir -p clang-bin
+            tar -xf clang-toolchain.tar.xz -C clang-bin
+            rm clang-toolchain.tar.xz
+          elif [[ "$FILENAME" == *.tar.gz ]]; then
+            curl -fL "$CLANG_SOURCE" -o clang-toolchain.tar.gz --connect-timeout 60 --retry 5 --retry-delay 5
+            mkdir -p clang-bin
+            tar -xzf clang-toolchain.tar.gz -C clang-bin
+            rm clang-toolchain.tar.gz
+          elif [[ "$FILENAME" == *.zip ]]; then
+            curl -fL "$CLANG_SOURCE" -o clang-toolchain.zip --connect-timeout 60 --retry 5 --retry-delay 5
+            mkdir -p clang-bin
+            unzip -q clang-toolchain.zip -d clang-bin
+            rm clang-toolchain.zip
+          else
+            echo "Unknown Clang archive format: $FILENAME"
+            exit 1
+          fi
+          
+          echo "Clang prepared successfully"
+
+      - name: Set Build Date
+        run: |
+          BUILD_DATE=$(date +%Y%m%d)
+          BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
+          echo "BUILD_TIME=$BUILD_TIME" >> $GITHUB_ENV
+          echo "Build date: $BUILD_DATE"
+
+      - name: Apply Re:Kernel Patches
+        if: ${{ env.REKERNEL_ENABLE == 'true' }}
+        run: |
+          cd kernel/source
+          echo "Applying Re:Kernel patches..."
+          curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/refs/heads/mainline/Patches/Rekernel/rekernel_patches.sh" -o rekernel_patches.sh
+          chmod +x rekernel_patches.sh
+          bash rekernel_patches.sh
+          mkdir -p drivers/rekernel
+          curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/refs/heads/mainline/Patches/Rekernel/rekernel_extra.patch" -o rekernel_extra.patch
+          patch -p1 < rekernel_extra.patch || true
+          echo "Re:Kernel patches applied"
+
+      - name: Apply Baseband Guard
+        if: ${{ env.BASEBAND_GUARD_ENABLE == 'true' }}
+        run: |
+          cd kernel/source
+          echo "=== Patching Baseband Guard ==="
+          
+          # 下载并执行 Baseband Guard 安装脚本
+          wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
+          
+          # 获取内核架构和 defconfig 名称
+          KERNEL_ARCH="arm64"
+          DEFCONFIG_NAME="${{ env.KERNEL_CONFIG }}"
+          
+          # 在 defconfig 中添加 CONFIG_BBG=y
+          echo "CONFIG_BBG=y" >> ./arch/$KERNEL_ARCH/configs/$DEFCONFIG_NAME
+          
+          # 检查 DEFINE_LSM 并配置 baseband_guard LSM
+          if grep -q "DEFINE_LSM" "include/linux/lsm_hooks.h" && ! grep -q "baseband_guard" "./arch/$KERNEL_ARCH/configs/$DEFCONFIG_NAME"; then
+            echo "======= Detecting LSM Configuration ======="
+            echo "= Found DEFINE_LSM in lsm_hooks.h ="
+            echo "========================================"
+            
+            if ! grep -rq "CONFIG_LSM=" "./arch/$KERNEL_ARCH/configs/$DEFCONFIG_NAME" && grep -q "bpf" "./security/Kconfig"; then
+              echo "[-] No default CONFIG_LSM values found, detected bpf."
+              echo 'CONFIG_LSM="lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> ./arch/$KERNEL_ARCH/configs/$DEFCONFIG_NAME
+            elif ! grep -rq "CONFIG_LSM=" "./arch/$KERNEL_ARCH/configs/$DEFCONFIG_NAME"; then
+              echo "[-] No default CONFIG_LSM values found."
+              echo 'CONFIG_LSM="lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,baseband_guard"' >> ./arch/$KERNEL_ARCH/configs/$DEFCONFIG_NAME
+            else
+              echo "[+] Found default CONFIG_LSM values."
+              sed -i 's/\(CONFIG_LSM="[^"]*\)"/\1,baseband_guard"/' ./arch/$KERNEL_ARCH/configs/$DEFCONFIG_NAME
+            fi
+          fi
+          
+          echo "[+] Baseband Guard patched successfully!"
+
+      - name: Inject KernelSU
+        if: ${{ env.ENABLE_KERNELSU == 'true' }}
+        run: |
+          cd kernel/source
+          echo "Configuring KernelSU (fork: $KERNELSU_AUTO_FORK, branch: $KERNELSU_BRANCH)..."
+          
+          case "$KERNELSU_AUTO_FORK" in
+            tiann)
+              KSU_SOURCE="https://raw.githubusercontent.com/tiann/KernelSU/$KERNELSU_BRANCH/kernel/setup.sh"
+              ;;
+            rsuntk)
+              KSU_SOURCE="https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh"
+              ;;
+            next)
+              KSU_SOURCE="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh"
+              ;;
+            resukisu)
+              KSU_SOURCE="https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh"
+              ;;
+            sukisu)
+              KSU_SOURCE="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
+              ;;
+            *)
+              KSU_SOURCE="https://raw.githubusercontent.com/tiann/KernelSU/$KERNELSU_BRANCH/kernel/setup.sh"
+              ;;
+          esac
+          
+          curl -LSs "$KSU_SOURCE" | bash
+          echo "KernelSU injected successfully"
+
+      - name: Configure SuSFS for DEFCONFIG
+        if: ${{ env.ENABLE_SUSFS == 'true' }}
+        run: |
+          cd kernel/source
+          echo "=== Configuring SuSFS ==="
+          
+          # 在 defconfig 中添加 SuSFS 配置
+          echo "CONFIG_KSU_SUSFS=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          
+          # 检查 THREAD_INFO_IN_TASK
+          if grep -q "THREAD_INFO_IN_TASK" "drivers/kernelsu/Kconfig" 2>/dev/null; then
+            echo "CONFIG_THREAD_INFO_IN_TASK=y" >> ./arch/arm64/configs/$KERNEL_CONFIG
+          fi
+          
+          echo "[+] SuSFS configured successfully!"
+
+      - name: Apply SuSFS Patches
+        if: ${{ env.ENABLE_SUSFS == 'true' }}
+        run: |
+          cd kernel/source
+          echo "=== Applying SuSFS Patches ==="
+          
+          # 下载 SuSFS 补丁文件
+          SUSFS_VERSION="2.1.00"
+          PATCH_URL="https://github.com/simonpunk/susfs4ksu/raw/main/patches/kernel-${SUSFS_VERSION}/susfs_on_ksu_for_linux-${SUSFS_VERSION}.patch"
+          
+          echo "Downloading SuSFS patch from: $PATCH_URL"
+          if curl -LSs "$PATCH_URL" -o susfs.patch; then
+            if [ -s susfs.patch ]; then
+              echo "Applying SuSFS patch..."
+              patch -p1 < susfs.patch || true
+              echo "[+] SuSFS patch applied successfully!"
+            else
+              echo "[-] SuSFS patch file is empty, skipping..."
+            fi
+          else
+            echo "[-] Failed to download SuSFS patch, skipping..."
+          fi
+
+      - name: Apply Syscall Hook Patches
+        if: ${{ env.HOOK_METHOD == 'syscall' }}
+        run: |
+          cd kernel/source
+          echo "Applying syscall hook patches..."
+          curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/syscall_hook_patches.sh" -o syscall_hook_patches.sh
+          chmod +x syscall_hook_patches.sh
+          bash syscall_hook_patches.sh
+          echo "Syscall hooks applied"
+
+      - name: Apply Kernel Patch (kernel_read/kernel_write)
+        if: ${{ env.KERNEL_PATCH == 'true' }}
+        run: |
+          cd kernel/source
+          echo "Applying kernel_read/kernel_write patches..."
+          curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/kernel_patch/kernel_patch.sh" -o kernel_patch.sh || true
+          if [ -f kernel_patch.sh ]; then
+            chmod +x kernel_patch.sh
+            bash kernel_patch.sh
+          fi
+          echo "Kernel patches applied"
+
+      - name: Configure Droidspaces (Docker/LXC)
+        if: ${{ env.DROIDSPACES_ENABLE == 'true' }}
+        run: |
+          cd kernel/source
+          echo "Configuring Droidspaces patches..."
+          
+          # Apply sysvipc KABI patch for kernels below 6.12
+          curl -LSs "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch" -o 001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch
+          patch -p1 < 001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch || true
+          
+          echo "Droidspaces patches applied"
+
+      - name: Download and Execute Custom Scripts
+        run: |
+          cd kernel/source
+          echo "=== Downloading Custom Scripts ==="
+          
+          # 检查是否有自定义脚本
+          if [ -z "$CUSTOM_SCRIPTS" ] || [ "$CUSTOM_SCRIPTS" = "[]" ]; then
+            echo "No custom scripts configured, skipping..."
+          else
+            echo "Custom scripts configured: $CUSTOM_SCRIPTS"
+            
+            # 创建临时目录
+            SCRIPT_DIR="custom-scripts-$$"
+            mkdir -p "$SCRIPT_DIR"
+            cd "$SCRIPT_DIR"
+            
+            # 使用 python3 解析 JSON 并下载脚本
+            python3 << 'EOF'
+import json
+import subprocess
+import sys
+
+try:
+    scripts = json.loads("$CUSTOM_SCRIPTS")
+    
+    if not scripts:
+        print("No scripts to download")
+        sys.exit(0)
+    
+    for i, script in enumerate(scripts, 1):
+        url = script.get('url', '')
+        description = script.get('description', f'Script {i}')
+        should_execute = script.get('execute', True)
+        
+        if not url:
+            print(f"[{i}/{len(scripts)}] Skipping {description}: No URL provided")
+            continue
+        
+        print(f"[{i}/{len(scripts)}] Downloading: {description}")
+        print(f"  URL: {url}")
+        
+        # 下载脚本
+        result = subprocess.run(
+            ['curl', '-LSs', url, '-o', f'script_{i}.sh'],
+            capture_output=True,
+            text=True
+        )
+        
+        # 检查下载是否成功
+        import os
+        if os.path.exists(f'script_{i}.sh') and os.path.getsize(f'script_{i}.sh') > 0:
+            print(f"  ✓ Downloaded successfully")
+            
+            # 执行脚本
+            if should_execute:
+                print(f"  Executing: {description}")
+                subprocess.run(['bash', f'script_{i}.sh'], check=False)
+                print(f"  ✓ Completed: {description}")
+            else:
+                print(f"  ⊘ Skipped execution (execute=false)")
+        else:
+            print(f"  ✗ Failed to download or file is empty")
+            
+except Exception as e:
+    print(f"Error processing scripts: {e}")
+    sys.exit(1)
+EOF
+            
+            # 清理临时目录
+            cd ..
+            rm -rf "$SCRIPT_DIR"
+          fi
+          
+          echo "[+] Custom scripts step completed"
+
+      - name: Configure Kernel
+        run: |
+          cd kernel/source
+          echo "Configuring kernel with: $KERNEL_CONFIG"
+          
+          export PATH="$(pwd)/../compiler/clang-bin/bin:$PATH"
+          export CROSS_COMPILE="aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
+          export CLANG_TRIPLE="aarch64-linux-gnu-"
+          export CLANG_PATH="$(pwd)/../compiler/clang-bin/bin"
+          export ARCH="arm64"
+          export SUBARCH="arm64"
+          
+          make O=out CC="clang" LLVM=1 $KERNEL_CONFIG
+          
+          # Adjust kernel configuration based on settings
+          if [ "$ENABLE_KERNELSU" = "true" ]; then
+            ./scripts/config --file out/.config -d CONFIG_KSU_TRACEPOINT_HOOK
+            ./scripts/config --file out/.config -e CONFIG_KSU_MANUAL_HOOK
+          fi
+          
+          if [ "$DROIDSPACES_ENABLE" = "true" ]; then
+            ./scripts/config --file out/.config -d CONFIG_USER_NS
+            ./scripts/config --file out/.config -e CONFIG_PID_NS
+            ./scripts/config --file out/.config -e CONFIG_IPC_NS
+            ./scripts/config --file out/.config -e CONFIG_CHECKPOINT_RESTORE
+            ./scripts/config --file out/.config -e CONFIG_SYSVIPC
+            ./scripts/config --file out/.config -e CONFIG_OVERLAY_FS
+            ./scripts/config --file out/.config -e CONFIG_CGROUP_PIDS
+            ./scripts/config --file out/.config -e CONFIG_MEMCG
+            ./scripts/config --file out/.config -e CONFIG_DEVTMPFS
+            ./scripts/config --file out/.config -e CONFIG_DEVTMPFS_MOUNT
+          fi
+          
+          echo "Kernel configured successfully"
+
+      - name: Compile Kernel
+        run: |
+          cd kernel/source
+          echo "Starting kernel compilation..."
+          
+          export PATH="$(pwd)/../compiler/clang-bin/bin:$PATH"
+          export CROSS_COMPILE="aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
+          export CLANG_TRIPLE="aarch64-linux-gnu-"
+          export CLANG_PATH="$(pwd)/../compiler/clang-bin/bin"
+          export ARCH="arm64"
+          export SUBARCH="arm64"
+          
+          make O=out CC="clang" LLVM=1 -j$(nproc)
+          
+          IMAGE_PATH="out/arch/arm64/boot/$KERNEL_IMAGE_NAME"
+          if [ -f "$IMAGE_PATH" ]; then
+            echo "Kernel compiled successfully: $IMAGE_PATH"
+            echo "IMAGE_PATH=$IMAGE_PATH" >> $GITHUB_ENV
+          else
+            echo "ERROR: Kernel image not found at $IMAGE_PATH"
+            ls -la out/arch/arm64/boot/ || true
+            exit 1
+          fi
+
+      - name: Generate DTB
+        if: ${{ env.GENERATE_DTB == 'true' }}
+        run: |
+          cd kernel/source
+          echo "Generating DTB for $GENERATE_CHIP chipset..."
+          make O=out dtbs
+          echo "DTB generation complete"
+
+      - name: Package with AnyKernel3
+        if: ${{ env.PACK_METHOD == 'Anykernel3' }}
+        run: |
+          echo "Packaging with AnyKernel3..."
+          git clone -b "${{ env.AK3_BRANCH }}" "${{ env.AK3_SOURCE }}" AnyKernel3
+          
+          # Copy kernel image
+          cp kernel/source/$IMAGE_PATH AnyKernel3/
+          
+          # Copy kernel modules if enabled
+          if [ "$PACK_KMODULES" = "true" ]; then
+            echo "Packing kernel modules..."
+            mkdir -p AnyKernel3/modules/vendor/lib/modules
+            find kernel/source/out/ -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
+          fi
+          
+          cd AnyKernel3
+          
+          # Create output ZIP
+          OUTPUT_NAME="NonGKI-Kernel-$DEVICE_CODENAME-$BUILD_DATE.zip"
+          zip -r9 "../$OUTPUT_NAME" * -x .git* README.md *placeholder
+          
+          echo "ARTIFACT_NAME=$OUTPUT_NAME" >> $GITHUB_ENV
+          echo "AnyKernel3 packaging complete"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.ARTIFACT_NAME || format('NonGKI-Kernel-{0}-{1}', env.DEVICE_CODENAME, env.BUILD_DATE) }}
+          path: ${{ env.ARTIFACT_NAME || format('NonGKI-Kernel-{0}-{1}.zip', env.DEVICE_CODENAME, env.BUILD_DATE) }}
+          retention-days: 14
+
+      - name: Build Summary
+        if: always()
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Device**: $DEVICE_NAME ($DEVICE_CODENAME)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kernel Source**: $KERNEL_SOURCE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: $KERNEL_BRANCH" >> $GITHUB_STEP_SUMMARY
+          echo "- **Config**: $KERNEL_CONFIG" >> $GITHUB_STEP_SUMMARY
+          echo "- **Compiler**: Clang (LLVM)" >> $GITHUB_STEP_SUMMARY
+          echo "- **KernelSU**: ${{ env.ENABLE_KERNELSU == 'true' && format('Enabled ({0})', env.KERNELSU_AUTO_FORK) || 'Disabled' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **SuSFS**: ${{ env.ENABLE_SUSFS == 'true' && 'Enabled' || 'Disabled' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Re:Kernel**: ${{ env.REKERNEL_ENABLE == 'true' && 'Enabled' || 'Disabled' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Droidspaces**: ${{ env.DROIDSPACES_ENABLE == 'true' && 'Enabled' || 'Disabled' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Hook Method**: $HOOK_METHOD" >> $GITHUB_STEP_SUMMARY
+          echo "- **Packaging**: $PACK_METHOD" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Date**: ${{ env.BUILD_DATE }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY

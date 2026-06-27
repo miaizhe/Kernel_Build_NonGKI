@@ -1,0 +1,41 @@
+# Dependabot 配置文件
+# 自动更新 GitHub Actions 版本和依赖
+
+version: 2
+updates:
+  # 监控 GitHub Actions 更新
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    reviewers:
+      - "miaizhe"
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  # 监控 Python 依赖更新（用于测试脚本）
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+      - "python"
+
+  # 监控 Shell 脚本依赖
+  - package-ecosystem: "shell"
+    directory: "/.github/scripts"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+      - "shell"
+
+  - package-ecosystem: "shell"
+    directory: "/Bin"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+      - "shell"

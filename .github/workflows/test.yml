@@ -1,0 +1,113 @@
+# 测试和验证工作流
+# 在每次推送和 PR 时运行测试套件
+
+name: Test and Validate
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '.github/scripts/**'
+      - 'Bin/**'
+      - 'tests/**'
+      - '.github/workflows/*.yml'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  test-scripts:
+    name: Test Shell Scripts
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Bash
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run all tests
+        run: |
+          chmod +x tests/run-tests.sh
+          bash tests/run-tests.sh
+
+      - name: Validate shell script syntax
+        run: |
+          echo "Validating shell script syntax..."
+          FAILED=0
+          for script in .github/scripts/*.sh Bin/*.sh tests/*.sh; do
+            if [ -f "$script" ]; then
+              bash -n "$script" 2>/dev/null
+              if [ $? -ne 0 ]; then
+                echo "FAIL: $script has syntax errors"
+                FAILED=1
+              else
+                echo "PASS: $script syntax OK"
+              fi
+            fi
+          done
+          exit $FAILED
+
+  validate-yaml:
+    name: Validate YAML Syntax
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Validate workflow YAML files
+        run: |
+          echo "Validating YAML syntax..."
+          yamllint .github/workflows/build-kernel.yml
+          echo "YAML validation passed!"
+
+  check-scripts-existence:
+    name: Check Required Files
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Check required files
+        run: |
+          echo "Checking required files..."
+          
+          FILES=(
+            ".github/workflows/build-kernel.yml"
+            ".github/scripts/ksu-inject.sh"
+            ".github/scripts/rekernel-helper.sh"
+            ".github/scripts/syscall-hook.sh"
+            ".github/scripts/susfs-helper.sh"
+            "Bin/prepare-compiler.sh"
+            "Bin/package-anykernel3.sh"
+            "Bin/pack-boot-image.sh"
+            "tests/run-tests.sh"
+            "README.md"
+            "README_cn.md"
+            "LICENSE"
+          )
+          
+          ALL_EXIST=true
+          for file in "${FILES[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✓ $file exists"
+            else
+              echo "✗ $file MISSING"
+              ALL_EXIST=false
+            fi
+          done
+          
+          if [ "$ALL_EXIST" = false ]; then
+            echo "ERROR: Some required files are missing!"
+            exit 1
+          fi
+          
+          echo "All required files present!"
